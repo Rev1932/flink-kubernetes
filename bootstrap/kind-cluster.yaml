@@ -1,0 +1,29 @@
+# Cluster local para desenvolvimento da plataforma de streaming.
+#
+# 1 control-plane + 2 workers: os workers dao espaco para espalhar
+# JobManagers/TaskManagers de tenants diferentes em nos diferentes, o que torna
+# o teste de isolamento mais representativo do que um cluster de no unico.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: flink-platform
+
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      # Habilita o ingress-ready para o caso de expormos o Flink UI via ingress.
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # Grafana (NodePort 30300) -> localhost:3000
+      - containerPort: 30300
+        hostPort: 3000
+        protocol: TCP
+      # Console do MinIO (NodePort 30901) -> localhost:9001
+      - containerPort: 30901
+        hostPort: 9001
+        protocol: TCP
+  - role: worker
+  - role: worker
