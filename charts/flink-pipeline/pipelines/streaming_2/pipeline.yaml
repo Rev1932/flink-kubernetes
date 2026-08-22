@@ -1,0 +1,39 @@
+# Contrato do pipeline `streaming_2`.
+#
+# Serve de contraponto ao streaming_1: e um pipeline SEM estado, para mostrar
+# que o mesmo chart cobre os dois casos so mudando o contrato -- em particular
+# upgradeMode stateless, que torna o deploy mais rapido por nao exigir savepoint.
+name: streaming_2
+description: >-
+  Transformacao e enriquecimento evento a evento, sem agregacao: filtra
+  transacoes acima de um limite e classifica por faixa de valor.
+
+sources:
+  - suffix: topico_2
+    partitions: 3
+
+sink:
+  type: mongodb
+  collection: job-name
+
+# Sem estado: nao ha janela nem agregacao a preservar entre versoes.
+stateful: false
+
+requiredVars:
+  - TENANT
+  - KAFKA_BOOTSTRAP
+  - MONGO_URI
+  - MONGO_DB
+
+defaults:
+  parallelism: 2
+  # stateless: no upgrade o job simplesmente reinicia do offset do consumer
+  # group, sem o custo de tirar e restaurar savepoint.
+  upgradeMode: stateless
+  checkpointInterval: 60s
+  taskManager:
+    memory: 1536m
+  env:
+    # Limite de valor para o filtro. Fica aqui, e nao no SQL, para que um tenant
+    # possa ajusta-lo sem tocar no pipeline compartilhado.
+    MIN_AMOUNT: "100.00"

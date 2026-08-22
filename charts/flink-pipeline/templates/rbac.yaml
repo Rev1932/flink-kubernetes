@@ -1,0 +1,62 @@
+{{- $slug := include "tenant.slug" . }}
+# ServiceAccount usada pelos JobManagers/TaskManagers do tenant.
+#
+# Duas necessidades distintas justificam estas permissoes:
+#
+#  1. Modo NATIVE: quem cria e destroi os pods de TaskManager e o proprio
+#     JobManager, conforme o job pede slots -- nao o operator. Sem `create` e
+#     `delete` em pods, o JobManager sobe, aceita o job, e fica em CREATED para
+#     sempre porque nenhum TaskManager jamais aparece.
+#  2. HA nativa: o leader election e os ponteiros de checkpoint moram em
+#     ConfigMaps.
+#
+# O escopo e Role (namespace), nunca ClusterRole: um tenant nao enxerga nem
+# altera nada fora do proprio namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $slug }}-flink
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $slug }}-flink
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+rules:
+  # HA nativa: leader election e ponteiros de checkpoint.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  # Modo native: o JobManager cria/remove os TaskManagers sob demanda.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  # Necessario para o JobManager marcar os pods de TaskManager como pertencentes
+  # ao seu Deployment (ownerReference), garantindo a limpeza ao remover o job.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $slug }}-flink
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $slug }}-flink
+subjects:
+  - kind: ServiceAccount
+    name: {{ $slug }}-flink
+    namespace: {{ .Release.Namespace }}

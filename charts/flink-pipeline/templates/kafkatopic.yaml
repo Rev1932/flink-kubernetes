@@ -1,0 +1,36 @@
+{{- if .Values.kafka.createTopics }}
+{{- $root := . -}}
+{{- $enabled := include "tenant.enabledPipelines" . | fromYamlArray -}}
+{{- $seen := dict -}}
+{{- range $pipeline := $enabled }}
+{{- $catalog := include "pipeline.catalog" (dict "root" $root "pipeline" $pipeline) | fromYaml }}
+{{- range $source := (default (list) $catalog.sources) }}
+{{- $logical := printf "%s_%s" (include "tenant.id" $root) $source.suffix }}
+{{- $resource := printf "%s-%s" (include "tenant.slug" $root) (include "platform.slugify" $source.suffix) }}
+{{- if not (hasKey $seen $logical) }}
+{{- $_ := set $seen $logical true }}
+---
+# Topico de origem do tenant.
+#
+# Repare na separacao: metadata.name precisa ser DNS-1123 (n-topico-1), mas o
+# topico real no Kafka e spec.topicName (N_topico_1). E este ultimo que o SQL
+# do pipeline referencia via ${TENANT}_topico_1.
+#
+# O recurso vive no namespace observado pelo Strimzi, nao no do tenant.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: {{ $resource }}
+  namespace: {{ $root.Values.kafka.topicNamespace }}
+  labels:
+    strimzi.io/cluster: {{ $root.Values.kafka.clusterName | quote }}
+    tenant: {{ include "tenant.slug" $root | quote }}
+    app.kubernetes.io/part-of: streaming-platform
+spec:
+  topicName: {{ $logical | quote }}
+  partitions: {{ default $root.Values.kafka.topicDefaults.partitions $source.partitions }}
+  replicas: {{ default $root.Values.kafka.topicDefaults.replicas $source.replicas }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

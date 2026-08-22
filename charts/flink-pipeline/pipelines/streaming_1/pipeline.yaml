@@ -1,0 +1,42 @@
+# Contrato do pipeline `streaming_1`, valido para todos os tenants.
+#
+# Um tenant que habilita este pipeline em tenants/<tenant>.yaml recebe um job
+# chamado <TENANT>_streaming_1, lendo <TENANT>_topico_1 e escrevendo na colecao
+# <TENANT>_streaming_1.
+name: streaming_1
+description: >-
+  Agregacao em janela temporal: soma e contagem de transacoes por usuario em
+  janelas fixas de 1 minuto, materializadas no MongoDB por upsert.
+
+# Topicos de origem. O sufixo e concatenado ao id do tenant:
+# suffix `topico_1` + tenant `N` -> topico `N_topico_1`.
+sources:
+  - suffix: topico_1
+    partitions: 3
+
+sink:
+  type: mongodb
+  # Colecao = nome logico do job (<TENANT>_streaming_1).
+  collection: job-name
+
+# Pipeline com estado (agregacao em janela): exige upgradeMode savepoint para
+# nao perder janelas em aberto durante um deploy.
+stateful: true
+
+# Variaveis que o SQL exige. O SqlRunner falha na inicializacao se faltar
+# alguma; esta lista existe para documentar o contrato e para o teste de
+# consistencia em tests/test-naming.sh.
+requiredVars:
+  - TENANT
+  - KAFKA_BOOTSTRAP
+  - MONGO_URI
+  - MONGO_DB
+
+# Padroes deste pipeline, sobrepondo os da plataforma (values.yaml defaults).
+# Um tenant ainda pode sobrescrever qualquer um destes.
+defaults:
+  parallelism: 2
+  upgradeMode: savepoint
+  checkpointInterval: 60s
+  taskManager:
+    memory: 2048m

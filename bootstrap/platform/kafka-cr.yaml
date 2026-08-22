@@ -1,0 +1,60 @@
+# Cluster Kafka do ambiente LOCAL.
+#
+# Producao usa um Kafka gerenciado fora deste repositorio -- aqui basta um
+# no unico em modo dual-role (controller + broker), suficiente para validar o
+# fluxo N_topico_1 -> N_streaming_1 -> MongoDB.
+#
+# Strimzi 1.x: apenas a API `v1`, KRaft e o unico modo (sem ZooKeeper) e o
+# KafkaNodePool e obrigatorio.
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaNodePool
+metadata:
+  name: dual-role
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: flink-kafka
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: 20Gi
+        deleteClaim: true
+        kraftMetadata: shared
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: flink-kafka
+  namespace: kafka
+spec:
+  kafka:
+    version: 4.3.1
+    metadataVersion: 4.3-IV0
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+    config:
+      # Fator 1 em todos os topicos internos: no unico no ambiente local.
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      # Os topicos por tenant sao criados explicitamente via KafkaTopic pelo
+      # chart. Desligar a criacao automatica evita que um erro de digitacao num
+      # nome de topico crie silenciosamente um topico vazio -- o job ficaria
+      # "RUNNING" para sempre sem consumir nada.
+      auto.create.topics.enable: "false"
+  entityOperator:
+    # O Topic Operator e quem reconcilia os recursos KafkaTopic que o chart
+    # gera por tenant.
+    topicOperator: {}
+    userOperator: {}

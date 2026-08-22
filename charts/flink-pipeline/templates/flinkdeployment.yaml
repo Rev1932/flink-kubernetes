@@ -1,0 +1,172 @@
+{{- $root := . -}}
+{{- $enabled := include "tenant.enabledPipelines" . | fromYamlArray -}}
+{{- range $pipeline := $enabled }}
+{{- $cfg := include "pipeline.config" (dict "root" $root "pipeline" $pipeline) | fromYaml }}
+{{- $name := include "job.resourceName" (dict "root" $root "pipeline" $pipeline) }}
+{{- $logical := include "job.logicalName" (dict "root" $root "pipeline" $pipeline) }}
+{{- if ne $cfg.executionMode "application" }}
+{{- fail (printf "pipeline %s: executionMode '%s' ainda nao implementado; use 'application'" $pipeline $cfg.executionMode) }}
+{{- end }}
+---
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "job.labels" (dict "root" $root "pipeline" $pipeline) | nindent 4 }}
+  annotations:
+    # Nomes logicos preservados: e por eles que se liga um recurso Kubernetes ao
+    # topico e a colecao correspondentes durante uma investigacao.
+    streaming.platform/job-name: {{ $logical | quote }}
+    streaming.platform/tenant-id: {{ include "tenant.id" $root | quote }}
+    streaming.platform/pipeline: {{ $pipeline | quote }}
+    streaming.platform/sink-collection: {{ $logical | quote }}
+spec:
+  image: {{ printf "%s:%s" $root.Values.image.repository $root.Values.image.tag | quote }}
+  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  flinkVersion: v1_20
+  serviceAccount: {{ include "tenant.slug" $root }}-flink
+
+  flinkConfiguration:
+    # --- estado e recuperacao ---------------------------------------------
+    state.backend.type: rocksdb
+    state.backend.incremental: "true"
+    execution.checkpointing.interval: {{ $cfg.checkpointInterval | quote }}
+    execution.checkpointing.mode: EXACTLY_ONCE
+    # Mantem checkpoints ao cancelar: sem isso, um upgrade mal sucedido nao teria
+    # de onde retomar.
+    execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+    state.checkpoints.dir: {{ printf "%s/%s/%s" $root.Values.storage.checkpointsBaseUri (include "tenant.slug" $root) $pipeline | quote }}
+    state.savepoints.dir: {{ printf "%s/%s/%s" $root.Values.storage.savepointsBaseUri (include "tenant.slug" $root) $pipeline | quote }}
+
+    # --- alta disponibilidade ---------------------------------------------
+    high-availability.type: kubernetes
+    high-availability.storageDir: {{ printf "%s/%s/%s" $root.Values.storage.haBaseUri (include "tenant.slug" $root) $pipeline | quote }}
+
+    # --- acesso ao S3 -------------------------------------------------------
+    {{- with $root.Values.storage.s3.endpoint }}
+    s3.endpoint: {{ . | quote }}
+    {{- end }}
+    s3.path-style-access: {{ $root.Values.storage.s3.pathStyleAccess | quote }}
+
+    # --- restart ------------------------------------------------------------
+    restart-strategy.type: {{ $cfg.restartStrategy.type | quote }}
+
+    # --- metricas -----------------------------------------------------------
+    {{- if $root.Values.monitoring.enabled }}
+    metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+    metrics.reporter.prom.port: {{ $root.Values.monitoring.metricsPort | quote }}
+    # Nao customizar metrics.scope.*: o PrometheusReporter ja monta o nome da
+    # metrica a partir do escopo logico (flink_jobmanager_job_uptime, ...) e
+    # expoe host/tm_id/job_name como labels. Redefinir os escopos quebraria
+    # justamente essa separacao entre nome e label.
+    {{- end }}
+
+    # --- slots --------------------------------------------------------------
+    taskmanager.numberOfTaskSlots: {{ $cfg.taskManager.numberOfTaskSlots | quote }}
+
+    # --- watermark com particoes ociosas ------------------------------------
+    # O watermark de uma fonte Kafka e o MINIMO entre suas particoes. Uma
+    # particao sem trafego mantem o watermark parado no passado e, com ele,
+    # nenhuma janela fecha -- o job aparece como RUNNING, consome mensagens e
+    # nunca escreve nada no sink. E o modo de falha mais confuso desta
+    # arquitetura, porque nao gera erro algum.
+    #
+    # Com idle-timeout, uma particao sem eventos por este periodo e marcada
+    # como ociosa e deixa de participar do calculo, liberando o watermark.
+    # Vale para qualquer topico cujo trafego nao seja uniforme entre particoes.
+    table.exec.source.idle-timeout: {{ $cfg.sourceIdleTimeout | quote }}
+
+    {{- if $cfg.autoscaler.enabled }}
+    # --- autoscaler ---------------------------------------------------------
+    job.autoscaler.enabled: "true"
+    job.autoscaler.stabilization.interval: "1m"
+    job.autoscaler.metrics.window: "5m"
+    job.autoscaler.target.utilization: "0.6"
+    job.autoscaler.scaling.enabled: "true"
+    jobmanager.scheduler: adaptive
+    job.autoscaler.vertex.min-parallelism: {{ $cfg.autoscaler.min | quote }}
+    job.autoscaler.vertex.max-parallelism: {{ $cfg.autoscaler.max | quote }}
+    {{- end }}
+
+    {{- with $cfg.flinkConfiguration }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+  jobManager:
+    resource:
+      cpu: {{ $cfg.jobManager.cpu }}
+      memory: {{ $cfg.jobManager.memory | quote }}
+  taskManager:
+    resource:
+      cpu: {{ $cfg.taskManager.cpu }}
+      memory: {{ $cfg.taskManager.memory | quote }}
+
+  podTemplate:
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: pod-template
+      labels:
+        {{- include "job.labels" (dict "root" $root "pipeline" $pipeline) | nindent 8 }}
+    spec:
+      containers:
+        # O nome `flink-main-container` e obrigatorio: e por ele que o operator
+        # identifica qual container do template deve receber a configuracao.
+        - name: flink-main-container
+          {{- if $root.Values.monitoring.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ $root.Values.monitoring.metricsPort }}
+          {{- end }}
+          env:
+            # Estas variaveis sao o que transforma um SQL generico no job deste
+            # tenant. O SqlRunner falha se alguma faltar.
+            - name: TENANT
+              value: {{ include "tenant.id" $root | quote }}
+            - name: PIPELINE
+              value: {{ $pipeline | quote }}
+            - name: JOB_NAME
+              value: {{ $logical | quote }}
+            - name: KAFKA_BOOTSTRAP
+              value: {{ $root.Values.kafka.bootstrapServers | quote }}
+            - name: MONGO_DB
+              value: {{ $root.Values.mongo.database | quote }}
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.mongo.existingSecret | default (printf "%s-mongo" (include "tenant.slug" $root)) }}
+                  key: {{ $root.Values.mongo.existingSecretKey }}
+            {{- $s3secret := $root.Values.storage.s3.existingSecret | default (printf "%s-s3" (include "tenant.slug" $root)) }}
+            {{- if or $root.Values.storage.s3.existingSecret $root.Values.storage.s3.accessKeyName }}
+            # Credenciais do S3 pela cadeia padrao AWS, fora do corpo do CR.
+            # Em IRSA/Workload Identity, remova estas duas entradas.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: {{ $s3secret }}, key: access-key }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: {{ $s3secret }}, key: secret-key }
+            {{- end }}
+            {{- range $k, $v := $cfg.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: pipeline-sql
+              mountPath: /opt/flink/sql
+              readOnly: true
+      volumes:
+        - name: pipeline-sql
+          configMap:
+            name: {{ $name }}-sql
+
+  job:
+    jarURI: local:///opt/flink/usrlib/sql-runner.jar
+    args: ["/opt/flink/sql/pipeline.sql"]
+    entryClass: io.streaming.platform.runner.SqlRunner
+    parallelism: {{ $cfg.parallelism }}
+    upgradeMode: {{ $cfg.upgradeMode }}
+    state: running
+{{- end }}
