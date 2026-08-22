@@ -1,0 +1,34 @@
+# Tenant K.
+#
+# Deliberadamente diferente do tenant N: menos recursos, apenas um pipeline
+# habilitado e um limite de filtro proprio. Serve para provar que dois tenants
+# com configuracoes distintas coexistem isolados sobre o mesmo catalogo de SQL.
+
+tenant:
+  id: "K"
+
+kafka:
+  bootstrapServers: flink-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092
+  createTopics: true
+
+mongo:
+  database: streaming
+  uri: mongodb://root:rootpass@mongodb.storage.svc.cluster.local:27017/?authSource=admin
+
+quota:
+  cpu: "6"
+  memory: 12Gi
+  pods: "20"
+
+pipelines:
+  streaming_1:
+    enabled: true
+    parallelism: 1
+    taskManager:
+      memory: 1536m
+      numberOfTaskSlots: 1
+
+  # Tenant K nao contratou o streaming_2. Nenhum recurso e criado para ele --
+  # nem job, nem topico, nem alerta.
+  streaming_2:
+    enabled: false

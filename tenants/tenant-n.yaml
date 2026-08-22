@@ -1,0 +1,41 @@
+# Tenant N.
+#
+# Convencao: o nome deste arquivo (tenant-n) e a release Helm e o namespace.
+# `tenant.id` e o identificador LOGICO usado em topicos e colecoes.
+#
+# Onboarding de um tenant novo = copiar este arquivo, trocar o id e rodar
+# `make deploy TENANT=<nome>`.
+
+tenant:
+  id: "N"
+
+kafka:
+  bootstrapServers: flink-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092
+  # Ambiente local: o chart cria N_topico_1 e N_topico_2 via Strimzi.
+  # Em producao, onde os topicos ja existem, mude para false.
+  createTopics: true
+
+mongo:
+  database: streaming
+  # Desenvolvimento. Em producao troque por:
+  #   existingSecret: tenant-n-mongo-uri
+  uri: mongodb://root:rootpass@mongodb.storage.svc.cluster.local:27017/?authSource=admin
+
+quota:
+  cpu: "12"
+  memory: 24Gi
+  pods: "40"
+
+pipelines:
+  # Tenant de maior volume: paralelismo acima do padrao do catalogo.
+  streaming_1:
+    enabled: true
+    parallelism: 4
+    taskManager:
+      memory: 2048m
+      numberOfTaskSlots: 2
+
+  streaming_2:
+    enabled: true
+    # Herda tudo do catalogo, inclusive upgradeMode stateless.
+    parallelism: 2
