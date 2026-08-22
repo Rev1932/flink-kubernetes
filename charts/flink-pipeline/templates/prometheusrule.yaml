@@ -1,0 +1,83 @@
+{{- if and .Values.monitoring.enabled .Values.monitoring.alerts.enabled }}
+{{- $slug := include "tenant.slug" . }}
+{{- $a := .Values.monitoring.alerts }}
+# Alertas sobre o estado das transmissoes do tenant.
+#
+# A ordem reflete o que costuma doer primeiro: um job parado e obvio, mas lag
+# crescente e checkpoint falhando sao os sintomas que aparecem antes de o
+# pipeline realmente quebrar.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $slug }}-flink
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: {{ $slug }}-streaming
+      rules:
+{{- $root := . }}
+{{- range $pipeline := include "tenant.enabledPipelines" . | fromYamlArray }}
+{{- $logical := include "job.logicalName" (dict "root" $root "pipeline" $pipeline) }}
+{{- $resource := include "job.resourceName" (dict "root" $root "pipeline" $pipeline) }}
+        - alert: FlinkJobNaoEstaRodando
+          # Uma regra POR JOB, e nao uma agregada por namespace.
+          #
+          # `absent()` so dispara quando a serie inteira some. Uma unica regra
+          # com filtro de namespace ficaria silenciosa enquanto qualquer job do
+          # tenant continuasse reportando uptime -- ou seja, deixaria passar
+          # exatamente o caso de um job isolado caindo, que e o mais comum.
+          # Como o chart sabe quais jobs deveriam existir, ele fixa job_name.
+          expr: |
+            absent(flink_jobmanager_job_uptime{job_name="{{ $logical }}"})
+          for: {{ $a.jobDownFor }}
+          labels:
+            severity: critical
+            tenant: {{ include "tenant.slug" $root | quote }}
+            pipeline: {{ include "platform.slugify" $pipeline | quote }}
+          annotations:
+            summary: "{{ $logical }} nao reporta metricas ha {{ $a.jobDownFor }}"
+            description: "O job parou, falhou ao subir ou o JobManager esta fora do ar. Verifique: kubectl -n {{ $root.Release.Namespace }} get flinkdeployment {{ $resource }}"
+{{- end }}
+
+        - alert: FlinkConsumerLagAlto
+          # Lag alto e sustentado: o pipeline nao acompanha a producao.
+          expr: |
+            max by (tenant, pipeline, job_name) (
+              flink_taskmanager_job_task_operator_KafkaSourceReader_KafkaConsumer_records_lag_max{namespace="{{ .Release.Namespace }}"}
+            ) > {{ $a.consumerLagThreshold }}
+          for: 10m
+          labels:
+            severity: warning
+            tenant: {{ $slug | quote }}
+          annotations:
+            summary: "Lag acima de {{ $a.consumerLagThreshold }} em {{`{{ $labels.job_name }}`}}"
+            description: "O consumo esta atras da producao ha 10 minutos. Considere aumentar o paralelismo do pipeline em tenants/*.yaml."
+
+        - alert: FlinkCheckpointFalhando
+          expr: |
+            increase(
+              flink_jobmanager_job_numberOfFailedCheckpoints{namespace="{{ .Release.Namespace }}"}[15m]
+            ) >= 3
+          for: 5m
+          labels:
+            severity: critical
+            tenant: {{ $slug | quote }}
+          annotations:
+            summary: "Checkpoints falhando em {{`{{ $labels.job_name }}`}}"
+            description: "Sem checkpoint integro o job nao consegue retomar do estado apos uma falha, e um upgrade com savepoint tambem falhara. Verifique o acesso ao bucket S3."
+
+        - alert: FlinkRestartLoop
+          expr: |
+            increase(
+              flink_jobmanager_job_numRestarts{namespace="{{ .Release.Namespace }}"}[15m]
+            ) >= {{ $a.restartsIn15m }}
+          for: 5m
+          labels:
+            severity: critical
+            tenant: {{ $slug | quote }}
+          annotations:
+            summary: "{{`{{ $labels.job_name }}`}} reiniciou {{ $a.restartsIn15m }}+ vezes em 15min"
+            description: "Reinicios repetidos costumam indicar erro de dados (parse), falta de memoria no TaskManager ou indisponibilidade do sink."
+{{- end }}

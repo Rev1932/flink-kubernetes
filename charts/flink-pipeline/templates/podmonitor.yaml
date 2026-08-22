@@ -1,0 +1,37 @@
+{{- if .Values.monitoring.enabled }}
+{{- $slug := include "tenant.slug" . }}
+# Coleta das metricas de JobManager e TaskManager de todos os jobs do tenant.
+#
+# O relabel e o que importa: sem promover `tenant` e `pipeline` de label do pod
+# para label da serie, as metricas de todos os tenants ficam indistinguiveis no
+# Prometheus e o dashboard nao consegue filtrar por tenant.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $slug }}-flink
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flink-pipeline
+      tenant: {{ $slug | quote }}
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_tenant]
+          targetLabel: tenant
+        - sourceLabels: [__meta_kubernetes_pod_label_pipeline]
+          targetLabel: pipeline
+        # `component` separa jobmanager de taskmanager -- o operator marca os
+        # pods com esta label.
+        - sourceLabels: [__meta_kubernetes_pod_label_component]
+          targetLabel: component
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+{{- end }}

@@ -1,0 +1,42 @@
+# Coleta das metricas do proprio Flink Kubernetes Operator.
+#
+# Estas metricas sao complementares as de dentro dos jobs: o PodMonitor de cada
+# tenant so ve jobs que conseguiram subir. Se um FlinkDeployment nunca chega a
+# criar pods -- imagem invalida, cota estourada, savepoint irrecuperavel --
+# quem denuncia e o operator, pelo lifecycle state.
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-operator-metrics
+  namespace: flink-operator
+  labels:
+    app.kubernetes.io/name: flink-kubernetes-operator
+    app.kubernetes.io/component: metrics
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: flink-kubernetes-operator
+  ports:
+    - name: metrics
+      port: 9999
+      targetPort: 9999
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: flink-operator
+  namespace: flink-operator
+  labels:
+    app.kubernetes.io/name: flink-kubernetes-operator
+    app.kubernetes.io/part-of: streaming-platform
+spec:
+  namespaceSelector:
+    matchNames:
+      - flink-operator
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: flink-kubernetes-operator
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      interval: 15s
