@@ -1,0 +1,18 @@
+# Build do runner (acontece dentro do Docker, mas o Maven pode deixar rastros
+# se alguem rodar mvn localmente).
+runner/target/
+*.class
+
+# Renderizacoes locais de manifesto
+*.rendered.yaml
+/tmp-manifests/
+
+# Helm
+charts/**/charts/
+*.tgz
+
+# Segredos: nenhum arquivo de credencial real deve ser versionado.
+# Os valores em tenants/*.yaml sao do ambiente kind e nao servem fora dele.
+*.key
+*.pem
+secrets.local.yaml
