@@ -1,0 +1,117 @@
+# Padroes da plataforma. Um arquivo em tenants/*.yaml sobrescreve apenas o que
+# difere -- ver tenants/tenant-n.yaml como exemplo.
+
+tenant:
+  # Identificador LOGICO do tenant, preservado como escrito.
+  # E o prefixo de topicos e colecoes: id "N" -> N_topico_1, N_streaming_1.
+  # Os nomes de recurso Kubernetes derivam dele em minusculo (n-streaming-1).
+  id: ""
+
+image:
+  repository: flink-sql-runner
+  tag: "1.20.2"
+  pullPolicy: IfNotPresent
+
+kafka:
+  bootstrapServers: flink-kafka-kafka-bootstrap.kafka.svc.cluster.local:9092
+  # Cria os KafkaTopic de origem via Strimzi. Em producao, onde os topicos ja
+  # existem e sao gerenciados por outro time, deixe false.
+  createTopics: true
+  # Namespace observado pelo Strimzi Cluster Operator. Os KafkaTopic vivem la,
+  # nao no namespace do tenant.
+  topicNamespace: kafka
+  clusterName: flink-kafka
+  topicDefaults:
+    partitions: 3
+    replicas: 1
+
+mongo:
+  database: streaming
+  # Producao: nome de um Secret ja existente no namespace do tenant, com a
+  # connection URI. Preferir sempre esta forma.
+  existingSecret: ""
+  existingSecretKey: uri
+  # Desenvolvimento apenas: se existingSecret estiver vazio, o chart cria um
+  # Secret com este valor.
+  uri: ""
+
+storage:
+  # Checkpoints, savepoints e metadados de HA.
+  checkpointsBaseUri: s3://flink/checkpoints
+  savepointsBaseUri: s3://flink/savepoints
+  haBaseUri: s3://flink/ha
+  s3:
+    # MinIO local. Em S3 real, deixe endpoint vazio e pathStyleAccess false.
+    endpoint: http://minio.storage.svc.cluster.local:9000
+    pathStyleAccess: true
+    # As credenciais entram como variaveis de ambiente AWS_* no pod, nunca no
+    # corpo do FlinkDeployment -- um CR e legivel por qualquer um com `get` no
+    # namespace. Em EKS/GKE, use IRSA/Workload Identity e deixe tudo vazio: sem
+    # as variaveis, o provider chain do S3 assume a identidade do pod.
+    existingSecret: ""
+    accessKeyName: minioadmin
+    secretKeyName: minioadmin
+
+# Herdado por todo pipeline; o catalogo e o tenant podem sobrescrever.
+defaults:
+  parallelism: 2
+  # savepoint: para o job tirando um savepoint e retoma do estado na nova versao.
+  # stateless: descarta o estado no upgrade (so para pipelines sem agregacao).
+  upgradeMode: savepoint
+  checkpointInterval: 60s
+  # Tempo sem eventos apos o qual uma particao Kafka e considerada ociosa e
+  # para de segurar o watermark. Sem isto, um topico com particoes de trafego
+  # desigual nunca fecha janela: o job fica RUNNING sem escrever no sink.
+  # Ver o comentario em templates/flinkdeployment.yaml.
+  sourceIdleTimeout: 15s
+  # Reservado para a evolucao descrita no README: hoje todo job roda isolado em
+  # application mode. Ao passar de ~30 tenants, pipelines leves podem migrar
+  # para um session cluster por tenant sem reescrever o chart.
+  executionMode: application
+  restartStrategy:
+    type: exponential-delay
+  jobManager:
+    cpu: 0.5
+    # 1024m NAO basta: o JobManager e OOMKilled (exit 137) durante o planejamento
+    # do SQL. O planner do Flink 1.20 carrega muitas classes e pressiona o
+    # metaspace, e `jobmanager.memory.process.size` conta heap + metaspace +
+    # overhead da JVM. 1600m e o menor valor que se mostrou estavel aqui.
+    #
+    # Este numero domina o custo da plataforma: em application mode ha um
+    # JobManager por job. Ver README, "Custo do application mode em escala".
+    memory: 1600m
+  taskManager:
+    cpu: 1
+    memory: 2048m
+    numberOfTaskSlots: 2
+  autoscaler:
+    enabled: false
+    min: 1
+    max: 8
+  # Configuracoes Flink extras aplicadas a este pipeline.
+  flinkConfiguration: {}
+  # Variaveis de ambiente extras visiveis ao SQL como ${NOME}.
+  env: {}
+
+# Cotas do namespace do tenant: o teto que impede um tenant de consumir os
+# recursos destinados aos outros.
+quota:
+  enabled: true
+  cpu: "16"
+  memory: 32Gi
+  pods: "50"
+
+monitoring:
+  enabled: true
+  metricsPort: 9249
+  # Alertas de job parado, lag, checkpoint e restart loop.
+  alerts:
+    enabled: true
+    jobDownFor: 2m
+    consumerLagThreshold: 100000
+    restartsIn15m: 3
+
+# Pipelines habilitados para este tenant. A chave e o nome no catalogo
+# (charts/flink-pipeline/pipelines/<nome>/). Vazio por padrao: quem decide e o
+# arquivo do tenant.
+pipelines: {}

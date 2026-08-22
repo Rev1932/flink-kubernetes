@@ -1,0 +1,10 @@
+apiVersion: v2
+name: flink-pipeline
+description: >-
+  Jobs de streaming Flink de um tenant. Uma release deste chart = um tenant;
+  cada pipeline habilitado vira um FlinkDeployment em application mode.
+type: application
+version: 1.0.0
+# Versao do Flink executada pelos jobs. Ver README, secao "Teto de versao",
+# antes de alterar: o conector MongoDB limita a plataforma a 1.20.
+appVersion: "1.20.2"

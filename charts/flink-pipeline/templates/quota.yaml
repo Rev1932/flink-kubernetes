@@ -1,0 +1,42 @@
+{{- if .Values.quota.enabled }}
+{{- $slug := include "tenant.slug" . }}
+# Teto de recursos do tenant.
+#
+# E o que impede que um pipeline mal dimensionado de um tenant consuma a
+# capacidade destinada aos demais: ao estourar a cota, o pod novo e recusado
+# pela API em vez de competir por CPU no no.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ $slug }}-quota
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  hard:
+    requests.cpu: {{ .Values.quota.cpu | quote }}
+    requests.memory: {{ .Values.quota.memory | quote }}
+    limits.cpu: {{ .Values.quota.cpu | quote }}
+    limits.memory: {{ .Values.quota.memory | quote }}
+    pods: {{ .Values.quota.pods | quote }}
+---
+# Com uma ResourceQuota ativa, o Kubernetes exige requests/limits explicitos em
+# todo pod do namespace. Este LimitRange fornece o padrao para pods auxiliares
+# (jobs de teste, debug) que nao passam pelo operator.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ $slug }}-limits
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 100m
+        memory: 256Mi
+{{- end }}

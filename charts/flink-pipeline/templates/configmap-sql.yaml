@@ -1,0 +1,26 @@
+{{- $root := . -}}
+{{- $enabled := include "tenant.enabledPipelines" . | fromYamlArray -}}
+{{- range $pipeline := $enabled }}
+{{- $name := include "job.resourceName" (dict "root" $root "pipeline" $pipeline) }}
+{{- $sql := include "pipeline.sql" (dict "root" $root "pipeline" $pipeline) }}
+---
+# SQL do pipeline, montado em /opt/flink/sql/pipeline.sql.
+#
+# O conteudo e identico para todos os tenants: os placeholders ${TENANT} e
+# afins sao resolvidos em runtime pelo SqlRunner, a partir das variaveis de
+# ambiente do pod. Editar este arquivo no catalogo e o que "versiona o pipeline".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-sql
+  namespace: {{ $root.Release.Namespace }}
+  labels:
+    {{- include "job.labels" (dict "root" $root "pipeline" $pipeline) | nindent 4 }}
+  annotations:
+    # O hash do SQL entra como anotacao para que `helm diff` mostre claramente
+    # quando um pipeline mudou de conteudo.
+    streaming.platform/sql-checksum: {{ $sql | sha256sum | trunc 16 | quote }}
+data:
+  pipeline.sql: |
+{{ $sql | indent 4 }}
+{{- end }}
